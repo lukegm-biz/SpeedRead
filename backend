@@ -1,0 +1,336 @@
+// Simple Speed Reading Server for Replit
+const express = require(‘express’);
+const cors = require(‘cors’);
+const axios = require(‘axios’);
+const cheerio = require(‘cheerio’);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static(‘public’));
+
+// Simple text extraction function
+function extractTextFromHTML(html) {
+try {
+const $ = cheerio.load(html);
+
+```
+// Remove unwanted elements
+$('script, style, nav, header, footer, aside, .advertisement, .ads').remove();
+
+// Try to find main content
+let content = '';
+const contentSelectors = ['article', '.content', '.post-content', 'main', '.main-content'];
+
+for (const selector of contentSelectors) {
+  const element = $(selector);
+  if (element.length > 0) {
+    content = element.text();
+    break;
+  }
+}
+
+// Fallback to body
+if (!content) {
+  content = $('body').text();
+}
+
+// Clean up the text
+content = content.replace(/\s+/g, ' ').trim();
+
+const title = $('title').text() || 'Article';
+
+return {
+  title: title.trim(),
+  content: content,
+  wordCount: content.split(' ').length
+};
+```
+
+} catch (error) {
+throw new Error(‘Could not extract text from this page’);
+}
+}
+
+// API endpoint to extract content from URL
+app.post(’/api/extract-content’, async (req, res) => {
+try {
+const { url } = req.body;
+
+```
+if (!url) {
+  return res.status(400).json({ error: 'URL is required' });
+}
+
+console.log(`Extracting content from: ${url}`);
+
+const response = await axios.get(url, {
+  timeout: 10000,
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+  }
+});
+
+const extracted = extractTextFromHTML(response.data);
+
+if (!extracted.content || extracted.content.length < 50) {
+  return res.status(400).json({ error: 'Could not extract meaningful content from this URL' });
+}
+
+res.json({
+  title: extracted.title,
+  content: extracted.content,
+  type: 'webpage',
+  wordCount: extracted.wordCount,
+  url: url
+});
+```
+
+} catch (error) {
+console.error(‘Extraction error:’, error.message);
+res.status(400).json({ error: ‘Failed to extract content from this URL. Try pasting the text instead.’ });
+}
+});
+
+// Health check
+app.get(’/api/health’, (req, res) => {
+res.json({ status: ‘OK’, timestamp: new Date().toISOString() });
+});
+
+// Serve the frontend HTML
+app.get(’/’, (req, res) => {
+res.send(`
+
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speed Reading App</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .word-display {
+            min-height: 120px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            font-weight: bold;
+            background: #f8fafc;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+```
+<script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    
+    function SpeedReadingApp() {
+        const [activeTab, setActiveTab] = useState('link');
+        const [words, setWords] = useState([]);
+        const [currentWordIndex, setCurrentWordIndex] = useState(0);
+        const [isPlaying, setIsPlaying] = useState(false);
+        const [wpm, setWpm] = useState(300);
+        const [progress, setProgress] = useState(0);
+        const [linkInput, setLinkInput] = useState('');
+        const [pastedText, setPastedText] = useState('');
+        const [isLoading, setIsLoading] = useState(false);
+        const intervalRef = useRef(null);
+        
+        const processText = (text) => {
+            const processedWords = text.trim().split(/\\s+/).filter(word => word.length > 0);
+            setWords(processedWords);
+            setCurrentWordIndex(0);
+            setProgress(0);
+            setIsPlaying(false);
+        };
+        
+        const handleLinkSubmit = async () => {
+            if (!linkInput.trim()) return;
+            setIsLoading(true);
+            
+            try {
+                const response = await fetch('/api/extract-content', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: linkInput })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    processText(data.content);
+                } else {
+                    alert(data.error || 'Could not extract content');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        
+        const handlePasteSubmit = () => {
+            if (!pastedText.trim()) return;
+            processText(pastedText);
+        };
+        
+        useEffect(() => {
+            if (isPlaying && words.length > 0 && currentWordIndex < words.length) {
+                const interval = 60000 / wpm;
+                intervalRef.current = setTimeout(() => {
+                    setCurrentWordIndex(prev => {
+                        const next = prev + 1;
+                        setProgress((next / words.length) * 100);
+                        if (next >= words.length) {
+                            setIsPlaying(false);
+                            return prev;
+                        }
+                        return next;
+                    });
+                }, interval);
+            }
+            
+            return () => {
+                if (intervalRef.current) {
+                    clearTimeout(intervalRef.current);
+                }
+            };
+        }, [isPlaying, currentWordIndex, words.length, wpm]);
+        
+        const togglePlayPause = () => {
+            if (words.length === 0) return;
+            setIsPlaying(!isPlaying);
+        };
+        
+        const resetReading = () => {
+            setIsPlaying(false);
+            setCurrentWordIndex(0);
+            setProgress(0);
+        };
+        
+        return React.createElement('div', {className: 'max-w-4xl mx-auto p-6 bg-gray-50 min-h-screen'},
+            React.createElement('div', {className: 'text-center mb-8'},
+                React.createElement('h1', {className: 'text-3xl font-bold text-gray-800 mb-2'}, '📖 SpeedRead Pro'),
+                React.createElement('p', {className: 'text-gray-600'}, 'Accelerate your reading with RSVP technology')
+            ),
+            
+            React.createElement('div', {className: 'bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 text-center'},
+                React.createElement('p', {className: 'text-blue-700 font-medium'}, '📚 Recommended: "Atomic Habits" by James Clear - Perfect for speed readers!')
+            ),
+            
+            React.createElement('div', {className: 'bg-white rounded-lg shadow-md mb-6'},
+                React.createElement('div', {className: 'flex border-b'},
+                    React.createElement('button', {
+                        className: \`flex-1 p-4 text-center font-medium transition-colors \${activeTab === 'link' ? 'border-b-2 border-blue-500 text-blue-600 bg-blue-50' : 'text-gray-600'}\`,
+                        onClick: () => setActiveTab('link')
+                    }, '🔗 Input Link'),
+                    React.createElement('button', {
+                        className: \`flex-1 p-4 text-center font-medium transition-colors \${activeTab === 'paste' ? 'border-b-2 border-blue-500 text-blue-600 bg-blue-50' : 'text-gray-600'}\`,
+                        onClick: () => setActiveTab('paste')
+                    }, '📝 Paste Text')
+                ),
+                
+                React.createElement('div', {className: 'p-6'},
+                    activeTab === 'link' ? 
+                        React.createElement('div', {className: 'space-y-4'},
+                            React.createElement('input', {
+                                type: 'url',
+                                value: linkInput,
+                                onChange: (e) => setLinkInput(e.target.value),
+                                placeholder: 'https://example.com/article',
+                                className: 'w-full p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500'
+                            }),
+                            React.createElement('button', {
+                                onClick: handleLinkSubmit,
+                                disabled: isLoading || !linkInput.trim(),
+                                className: 'w-full bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50'
+                            }, isLoading ? 'Extracting...' : 'Extract & Read')
+                        ) :
+                        React.createElement('div', {className: 'space-y-4'},
+                            React.createElement('textarea', {
+                                value: pastedText,
+                                onChange: (e) => setPastedText(e.target.value),
+                                placeholder: 'Paste your article or text here...',
+                                rows: 6,
+                                className: 'w-full p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500'
+                            }),
+                            React.createElement('button', {
+                                onClick: handlePasteSubmit,
+                                disabled: !pastedText.trim(),
+                                className: 'w-full bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50'
+                            }, 'Start Speed Reading')
+                        )
+                )
+            ),
+            
+            words.length > 0 && React.createElement('div', {className: 'bg-white rounded-lg shadow-md mb-6'},
+                React.createElement('div', {className: 'p-6'},
+                    React.createElement('div', {className: 'word-display'},
+                        words[currentWordIndex] || 'Ready'
+                    ),
+                    
+                    React.createElement('div', {className: 'w-full bg-gray-200 rounded-full h-2 mb-4'},
+                        React.createElement('div', {
+                            className: 'bg-blue-600 h-2 rounded-full transition-all',
+                            style: {width: \`\${progress}%\`}
+                        })
+                    ),
+                    
+                    React.createElement('div', {className: 'flex items-center justify-center gap-4 mb-4'},
+                        React.createElement('button', {
+                            onClick: resetReading,
+                            className: 'px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600'
+                        }, '⟲ Reset'),
+                        
+                        React.createElement('button', {
+                            onClick: togglePlayPause,
+                            className: 'px-6 py-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 text-xl'
+                        }, isPlaying ? '⏸️' : '▶️'),
+                        
+                        React.createElement('div', {className: 'flex items-center gap-2'},
+                            React.createElement('input', {
+                                type: 'range',
+                                min: 100,
+                                max: 800,
+                                step: 50,
+                                value: wpm,
+                                onChange: (e) => setWpm(Number(e.target.value)),
+                                className: 'w-24'
+                            }),
+                            React.createElement('span', {className: 'text-sm font-medium min-w-[60px]'}, \`\${wpm} WPM\`)
+                        )
+                    ),
+                    
+                    React.createElement('div', {className: 'text-sm text-gray-600 text-center'},
+                        \`Word \${currentWordIndex + 1} of \${words.length} • \${Math.round((words.length / wpm) * 100) / 100} min read\`
+                    )
+                )
+            )
+        );
+    }
+    
+    ReactDOM.render(React.createElement(SpeedReadingApp), document.getElementById('root'));
+</script>
+```
+
+</body>
+</html>
+  `);
+});
+
+app.listen(PORT, () => {
+console.log(`🚀 Speed Reading App running on port ${PORT}`);
+console.log(`📖 Open your browser to see the app!`);
+});
